@@ -43,7 +43,18 @@ tab_single, tab_batch, tab_about = st.tabs(["Check a message", "Batch check (CSV
 # Tab 1: single message
 # ---------------------------------------------------------------------
 with tab_single:
-    message = st.text_area("Enter your message:", height=120, key="single_message")
+
+    if "single_message" not in st.session_state:
+        st.session_state.single_message = ""
+
+    def set_example(example):
+        st.session_state.single_message = example
+
+    message = st.text_area(
+        "Enter your message:",
+        height=120,
+        key="single_message"
+    )
 
     examples = [
         "Hey, are you coming to class tomorrow?",
@@ -53,9 +64,13 @@ with tab_single:
     ]
     cols = st.columns(len(examples))
     for col, ex in zip(cols, examples):
-        if col.button(ex[:18] + "…", help=ex, use_container_width=True):
-            st.session_state.single_message = ex
-            st.rerun()
+        col.button(
+            ex[:18] + "…",
+            help=ex,
+            use_container_width=True,
+            on_click=set_example,
+            args=(ex,),
+        )
 
     if st.button("Analyze Message", type="primary"):
         if not message.strip():
