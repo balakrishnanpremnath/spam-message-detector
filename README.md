@@ -124,3 +124,10 @@ Python · Pandas · Scikit-learn · NLTK (stemming) · Streamlit · Docker · Gi
 - Swap TF-IDF for a small transformer embedding (e.g. `sentence-transformers`) and compare
 - Add a `/predict` FastAPI endpoint alongside the Streamlit UI for programmatic access
 - Track experiments with MLflow instead of a flat `results.json`
+
+## Usage
+
+### Run the Streamlit App
+
+```bash
+streamlit run app.py
