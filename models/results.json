@@ -1,0 +1,42 @@
+{
+  "results": [
+    {
+      "Model": "Naive Bayes",
+      "Accuracy": 0.9854932301740812,
+      "Precision": 0.967741935483871,
+      "Recall": 0.916030534351145,
+      "F1-Score": 0.9411764705882353
+    },
+    {
+      "Model": "Logistic Regression",
+      "Accuracy": 0.988394584139265,
+      "Precision": 0.968503937007874,
+      "Recall": 0.9389312977099237,
+      "F1-Score": 0.9534883720930233
+    },
+    {
+      "Model": "Linear SVM",
+      "Accuracy": 0.9893617021276596,
+      "Precision": 0.9761904761904762,
+      "Recall": 0.9389312977099237,
+      "F1-Score": 0.9571984435797666
+    }
+  ],
+  "best_model": "Linear SVM",
+  "best_params": {
+    "clf__estimator__C": 1,
+    "tfidf__max_features": 5000
+  },
+  "confusion_matrix": [
+    [
+      900,
+      3
+    ],
+    [
+      8,
+      123
+    ]
+  ],
+  "dataset_size": 5169,
+  "test_size": 1034
+}
