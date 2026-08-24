@@ -131,3 +131,20 @@ Python · Pandas · Scikit-learn · NLTK (stemming) · Streamlit · Docker · Gi
 
 ```bash
 streamlit run app.py
+
+## 🔄 NLP Pipeline
+
+```text
+User Message
+     ↓
+Text Preprocessing
+     ↓
+Tokenization / Cleaning
+     ↓
+TF-IDF Vectorization
+     ↓
+Trained Machine Learning Model
+     ↓
+Spam / Ham Prediction
+     ↓
+Streamlit Web App
