@@ -27,7 +27,7 @@ jobs:
         run: flake8 . --max-line-length=100 --extend-exclude=notebooks --exclude=.github
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -v
 
   docker-build:
     runs-on: ubuntu-latest
