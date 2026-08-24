@@ -35,6 +35,7 @@ def test_message_length_features_keys():
     assert set(feats.keys()) == {"char_count", "exclaim_count", "upper_ratio", "digit_ratio"}
     assert feats["exclaim_count"] == 3
     assert feats["char_count"] == len("WOW!!! free prize")
+    
 
 def test_clean_text_removes_extra_whitespace():
     result = clean_text("Hello    world")
