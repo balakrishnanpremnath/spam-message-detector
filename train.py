@@ -1,19 +1,13 @@
-"""
-Upgraded training script for the Spam Message Detector.
+"""Train and evaluate the SMS spam classifier.
 
-Improvements over v1:
-- Text cleaning + stemming (preprocessing.py) before TF-IDF
-- GridSearchCV hyperparameter tuning per model (5-fold CV, scored on F1)
-- LinearSVC wrapped in CalibratedClassifierCV so the app can show a
-  confidence score, not just a hard label
-- Single sklearn Pipeline (clean -> TF-IDF -> classifier) saved as one
-  artifact, so the app doesn't need to duplicate preprocessing logic
-- Saves a metrics report (models/results.json) used by the app's
-  "model info" panel
+Select the model using training cross-validation.
+Evaluate the selected model on the existing test split.
+Save artifacts compatible with the Streamlit application.
 """
 
 import json
 import time
+from pathlib import Path
 
 import joblib
 import pandas as pd
@@ -28,141 +22,280 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedKFold,
+    train_test_split,
+)
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 
 from preprocessing import clean_text
 
-# ---------------------------------------------------------------------
-# 1. Load & clean data
-# ---------------------------------------------------------------------
-df = pd.read_csv("data/spam.csv")
-df = df[["label", "message"]].copy().dropna().drop_duplicates()
-df["label_encoded"] = df["label"].map({"ham": 0, "spam": 1})
-print(f"Dataset shape after cleaning: {df.shape}")
 
-X = df["message"]
-y = df["label_encoded"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
-
-# ---------------------------------------------------------------------
-# 2. Build pipelines (cleaning happens inside the vectorizer)
-# ---------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "data" / "spam.csv"
+MODEL_DIR = BASE_DIR / "models"
+RANDOM_STATE = 42
 
 
 def make_vectorizer():
-    return TfidfVectorizer(preprocessor=clean_text, ngram_range=(1, 2), sublinear_tf=True)
+    """Keep text preprocessing inside the fitted pipeline."""
+    return TfidfVectorizer(
+        preprocessor=clean_text,
+        ngram_range=(1, 2),
+        sublinear_tf=True,
+    )
 
 
-param_grids = {
-    "Naive Bayes": (
-        Pipeline([("tfidf", make_vectorizer()), ("clf", MultinomialNB())]),
-        {
-            "tfidf__max_features": [3000, 5000],
-            "clf__alpha": [0.1, 0.5, 1.0],
-        },
-    ),
-    "Logistic Regression": (
-        Pipeline(
-            [
-                ("tfidf", make_vectorizer()),
-                ("clf", LogisticRegression(max_iter=2000, class_weight="balanced")),
-            ]
-        ),
-        {
-            "tfidf__max_features": [3000, 5000],
-            "clf__C": [1, 5, 10],
-        },
-    ),
-    "Linear SVM": (
-        Pipeline(
-            [
-                ("tfidf", make_vectorizer()),
-                (
-                    "clf",
-                    CalibratedClassifierCV(
-                        LinearSVC(class_weight="balanced", dual="auto"), cv=3
-                    ),
+def load_data():
+    """Load the expected CSV and validate its labels."""
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Dataset not found: {DATA_PATH}"
+        )
+
+    df = pd.read_csv(DATA_PATH)
+    required_columns = {"label", "message"}
+
+    if not required_columns.issubset(df.columns):
+        raise ValueError(
+            "data/spam.csv must contain 'label' and 'message' columns."
+        )
+
+    df = (
+        df[["label", "message"]]
+        .copy()
+        .dropna()
+        .drop_duplicates()
+    )
+
+    invalid_labels = set(df["label"]) - {"ham", "spam"}
+    if invalid_labels:
+        raise ValueError(
+            f"Unexpected labels: {sorted(invalid_labels)}"
+        )
+
+    if set(df["label"]) != {"ham", "spam"}:
+        raise ValueError("The dataset must contain both ham and spam.")
+
+    if df["message"].astype(str).str.strip().eq("").any():
+        raise ValueError(
+            "The dataset contains blank messages. Review them before training."
+        )
+
+    conflicting = df.groupby("message")["label"].nunique()
+    if conflicting.gt(1).any():
+        raise ValueError(
+            "Some identical messages have conflicting labels. "
+            "Review these records before training."
+        )
+
+    df["label_encoded"] = df["label"].map({"ham": 0, "spam": 1})
+    return df
+
+
+def build_candidates():
+    """Create the candidate models and their search spaces."""
+    calibration_cv = StratifiedKFold(
+        n_splits=3,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+    )
+
+    # Calibrate the entire SVM pipeline so TF-IDF is fitted
+    # separately within each calibration training fold.
+    svm_pipeline = Pipeline(
+        [
+            ("tfidf", make_vectorizer()),
+            (
+                "clf",
+                LinearSVC(
+                    class_weight="balanced",
+                    dual="auto",
+                    random_state=RANDOM_STATE,
                 ),
-            ]
-        ),
-        {
-            "tfidf__max_features": [3000, 5000],
-            "clf__estimator__C": [0.5, 1, 5],
-        },
-    ),
-}
+            ),
+        ]
+    )
 
-# ---------------------------------------------------------------------
-# 3. Grid search each model
-# ---------------------------------------------------------------------
-
-
-def evaluate(name, y_true, y_pred):
     return {
-        "Model": name,
-        "Accuracy": accuracy_score(y_true, y_pred),
-        "Precision": precision_score(y_true, y_pred),
-        "Recall": recall_score(y_true, y_pred),
-        "F1-Score": f1_score(y_true, y_pred),
+        "Naive Bayes": (
+            Pipeline(
+                [
+                    ("tfidf", make_vectorizer()),
+                    ("clf", MultinomialNB()),
+                ]
+            ),
+            {
+                "tfidf__max_features": [3000, 5000],
+                "clf__alpha": [0.1, 0.5, 1.0],
+            },
+        ),
+        "Logistic Regression": (
+            Pipeline(
+                [
+                    ("tfidf", make_vectorizer()),
+                    (
+                        "clf",
+                        LogisticRegression(
+                            max_iter=2000,
+                            class_weight="balanced",
+                            random_state=RANDOM_STATE,
+                        ),
+                    ),
+                ]
+            ),
+            {
+                "tfidf__max_features": [3000, 5000],
+                "clf__C": [1, 5, 10],
+            },
+        ),
+        "Linear SVM": (
+            CalibratedClassifierCV(
+                estimator=svm_pipeline,
+                cv=calibration_cv,
+            ),
+            {
+                "estimator__tfidf__max_features": [3000, 5000],
+                "estimator__clf__C": [0.5, 1, 5],
+            },
+        ),
     }
 
 
-results = []
-fitted = {}
-best_params_log = {}
+def evaluate(name, y_true, y_pred):
+    """Calculate metrics with spam as the positive class."""
+    return {
+        "Model": name,
+        "Accuracy": float(accuracy_score(y_true, y_pred)),
+        "Precision": float(
+            precision_score(y_true, y_pred, zero_division=0)
+        ),
+        "Recall": float(
+            recall_score(y_true, y_pred, zero_division=0)
+        ),
+        "F1-Score": float(
+            f1_score(y_true, y_pred, zero_division=0)
+        ),
+    }
 
-for name, (pipe, grid) in param_grids.items():
-    t0 = time.time()
-    search = GridSearchCV(pipe, grid, scoring="f1", cv=5, n_jobs=-1)
-    search.fit(X_train, y_train)
-    elapsed = time.time() - t0
 
-    best_pipe = search.best_estimator_
-    pred = best_pipe.predict(X_test)
+def main():
+    df = load_data()
 
-    row = evaluate(name, y_test, pred)
-    results.append(row)
-    fitted[name] = best_pipe
-    best_params_log[name] = search.best_params_
-
-    print(f"\n{name} — best params: {search.best_params_} (tuned in {elapsed:.1f}s)")
-    print(classification_report(y_test, pred, target_names=["Ham", "Spam"]))
-
-results_df = pd.DataFrame(results)
-print("\nModel comparison:")
-print(results_df.to_string(index=False))
-
-# ---------------------------------------------------------------------
-# 4. Pick best model, save it as ONE pipeline artifact
-# ---------------------------------------------------------------------
-best_row = results_df.loc[results_df["F1-Score"].idxmax()]
-best_name = best_row["Model"]
-best_pipeline = fitted[best_name]
-
-cm = confusion_matrix(y_test, best_pipeline.predict(X_test))
-print(f"\nBest model: {best_name} (F1-Score: {best_row['F1-Score']:.4f})")
-print(f"Confusion matrix:\n{cm}")
-
-joblib.dump(best_pipeline, "models/spam_pipeline.pkl")
-
-with open("models/results.json", "w") as f:
-    json.dump(
-        {
-            "results": results_df.to_dict(orient="records"),
-            "best_model": best_name,
-            "best_params": best_params_log[best_name],
-            "confusion_matrix": cm.tolist(),
-            "dataset_size": len(df),
-            "test_size": len(y_test),
-        },
-        f,
-        indent=2,
+    X_train, X_test, y_train, y_test = train_test_split(
+        df["message"],
+        df["label_encoded"],
+        test_size=0.2,
+        random_state=RANDOM_STATE,
+        stratify=df["label_encoded"],
     )
 
-print("\nSaved models/spam_pipeline.pkl (cleaning + TF-IDF + classifier, single artifact)")
+    print(f"Dataset records: {len(df)}")
+    print(f"Training records: {len(X_train)}")
+    print(f"Test records: {len(X_test)}")
+
+    selection_cv = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+    )
+
+    fitted = {}
+    cv_scores = {}
+    best_params = {}
+
+    # No test predictions are made during candidate selection.
+    for name, (estimator, param_grid) in build_candidates().items():
+        print(f"\nTraining {name}...")
+        started = time.perf_counter()
+
+        search = GridSearchCV(
+            estimator=estimator,
+            param_grid=param_grid,
+            scoring="f1",
+            cv=selection_cv,
+            n_jobs=-1,
+            refit=True,
+            error_score="raise",
+        )
+        search.fit(X_train, y_train)
+
+        fitted[name] = search.best_estimator_
+        cv_scores[name] = float(search.best_score_)
+        best_params[name] = search.best_params_
+
+        elapsed = time.perf_counter() - started
+        print(f"Mean CV F1: {search.best_score_:.4f}")
+        print(f"Best parameters: {search.best_params_}")
+        print(f"Elapsed: {elapsed:.1f} seconds")
+
+    print("\nTraining cross-validation comparison:")
+    for name, score in sorted(
+        cv_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        print(f"{name}: {score:.4f}")
+
+    # Choose the winner using training CV results only.
+    selected_name = max(cv_scores, key=cv_scores.get)
+    selected_model = fitted[selected_name]
+
+    print(f"\nSelected model: {selected_name}")
+
+    # Evaluate the selected model after the selection is complete.
+    predictions = selected_model.predict(X_test)
+    test_metrics = evaluate(selected_name, y_test, predictions)
+    cm = confusion_matrix(y_test, predictions, labels=[0, 1])
+
+    print("\nSelected model test results:")
+    print(
+        classification_report(
+            y_test,
+            predictions,
+            labels=[0, 1],
+            target_names=["Ham", "Spam"],
+            zero_division=0,
+        )
+    )
+    print(f"Test F1: {test_metrics['F1-Score']:.4f}")
+    print(f"Confusion matrix:\n{cm}")
+
+    results = {
+        "results": [test_metrics],
+        "best_model": selected_name,
+        "best_params": best_params[selected_name],
+        "selection_metric": "mean training cross-validation F1",
+        "cv_scores": cv_scores,
+        "confusion_matrix": cm.tolist(),
+        "dataset_size": len(df),
+        "train_size": len(X_train),
+        "test_size": len(X_test),
+        "random_state": RANDOM_STATE,
+        "evaluation_note": (
+            "This test split was used in earlier experiments. "
+            "It is not a newly untouched final holdout."
+        ),
+    }
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        selected_model,
+        MODEL_DIR / "spam_pipeline.pkl",
+    )
+
+    with (MODEL_DIR / "results.json").open(
+        "w", encoding="utf-8"
+    ) as file:
+        json.dump(results, file, indent=2)
+
+    print("\nSaved models/spam_pipeline.pkl")
+    print("Saved models/results.json")
+    print("Update README metrics using these new results.")
+
+
+if __name__ == "__main__":
+    main()
